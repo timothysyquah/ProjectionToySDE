@@ -41,21 +41,26 @@ class sde_int():
             error = 1
             tol = 1e-5
             xtemp = xtemp_i.copy()
-            maxiter = 100
+            maxiter = 5
             itter = 0
             print(np.shape(xtemp))
             print(self.gc(xtemp))
             while error>tol:
                 #create a diagonal matrix
-                temp = xtemp - (self.gc(xtemp)*1/self.djc(xtemp))
+                update = (self.gc(xtemp)/
+                          
+                          
+                          
+                          self.djc(xtemp))
+                temp = xtemp - update
 
-                error = np.linalg.norm(temp-xtemp)
+                error = np.sum(np.square(temp.real-xtemp.real))
                 itter +=1
-                if itter%20:
-                    print('wvalue',xtemp)
-                    print('error',error)
-                    print('gtol',self.gc(xtemp))
-                    print('djc',self.djc(xtemp))
+                print('update',update)
+                print('wvalue',xtemp)
+                print('error',error)
+                print('gtol',self.gc(xtemp))
+                print('djc',self.djc(xtemp))
                 xtemp = temp
 
                 if itter > maxiter:
@@ -168,8 +173,8 @@ class model():
         if self.ensemble == 'grand':
             rhoA = self.rho(wA,self.phiA)
             rhoB = self.rho(wB,self.phiB)
-            dgdwplus = -1/2*(rhoA+rhoB)
-            dgdwminus = 1/2*(rhoA-rhoB)
+            dgdwplus = -(rhoA+rhoB)
+            dgdwminus = (rhoA-rhoB)
             #there might be a sign here?
             return np.vstack((dgdwplus,dgdwminus)).T
     def getDensity(self,w):
