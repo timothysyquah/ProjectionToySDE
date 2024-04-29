@@ -1,13 +1,53 @@
 import numpy as np
-from scipy.optimize import fsolve
+
+def LSolver(w0,lag_mult,gl,dgldl,tol = 1e-5,maxiter = 10000,maxupdate = 1000):
+    error = 1
+    itter=0
+
+    while error > tol:
+        update= (gl(w0,lag_mult))/dgldl(w0,lag_mult)
+        print(update)
+        # actually we can apply this logic locally to each element of the update
+        loc  = np.where(np.abs(update)>maxupdate)
+        if len(loc)>0:
+            update[loc] = update[loc]/np.abs(update[loc])*maxupdate
+        
+        lag_mult+= -(update)
+        #use Linf nnorm
+        error = np.max(np.abs(gl(w0,lag_mult).real))
+        error2 = np.max(np.abs(gl(w0,lag_mult).imag))
+        if error2>error:
+            error = error2
+        itter+=1
+        if itter == maxiter:
+            break
+        print('error',error)
+    return lag_mult
+
+
+def getw_rho(wplus,wminus,phiA,phiB,rho):
+    wplus = wplus
+    wminus = wminus
+    wA = (wplus+wminus)/2
+    wB = (wplus-wminus)/2
+    rhoA = rho(wA,phiA)
+    rhoB = rho(wB,phiB)
+    return rhoA,rhoB
+
+
+
 class sde_int():
     def __init__(self,x0,F,g):
         self.x0 = x0
         self.F = F
         self.g = g
-    def initialize_project(self,gc,djc):
-        self.gc = gc
-        self.djc = djc
+    def initialize_project(self,dgdw,gl,dgldl,tol,maxiter,maxupdate):
+        self.dgdw = dgdw
+        self.gl = gl
+        self.dgldl = dgldl
+        self.tol = tol
+        self.maxiter = maxiter
+        self.maxupdate = maxupdate
     def Euler_Maruyama(self,tmax,delta_t,lambda_t,SCFT = False):
         x = []
         tlist = []
@@ -21,6 +61,9 @@ class sde_int():
             if not SCFT:
                 noise = np.vstack((np.random.normal(0,1,shape_array[0]),np.random.normal(0,1,shape_array[0]))).T
                 xtemp += self.g(x[-1])*np.sqrt(2*dt_eff)*noise
+            if np.any(np.isnan(xtemp)):
+                print('nan')
+                break
             x.append(xtemp)
             t += delta_t
             tlist.append(t)
@@ -38,34 +81,18 @@ class sde_int():
             if not SCFT:
                 noise = np.vstack((np.random.normal(0,1,shape_array[0]),np.random.normal(0,1,shape_array[0]))).T
                 xtemp_i += self.g(x[-1])*np.sqrt(2*dt_eff)*noise
-            error = 1
-            tol = 1e-5
             xtemp = xtemp_i.copy()
-            maxiter = 5
-            itter = 0
-            print(np.shape(xtemp))
-            print(self.gc(xtemp))
-            while error>tol:
-                #create a diagonal matrix
-                update = (self.gc(xtemp)/
-                          
-                          
-                          
-                          self.djc(xtemp))
-                temp = xtemp - update
+            lag_mult = np.zeros(len(xtemp),dtype = complex)
+            lag_mult = LSolver(xtemp,lag_mult,self.gl,self.dgldl,self.tol,self.maxiter,self.maxupdate)
+            # dgdl 
 
-                error = np.sum(np.square(temp.real-xtemp.real))
-                itter +=1
-                print('update',update)
-                print('wvalue',xtemp)
-                print('error',error)
-                print('gtol',self.gc(xtemp))
-                print('djc',self.djc(xtemp))
-                xtemp = temp
+            xtemp[:,0]+=lag_mult*self.dgdw(xtemp)[:,0]
+            xtemp[:,1]+=lag_mult*self.dgdw(xtemp)[:,1]
 
-                if itter > maxiter:
-                    break
-            break
+            if np.any(np.isnan(xtemp)):
+                print('nan')
+                break
+
             x.append(xtemp)
             t += delta_t
             tlist.append(t)
@@ -101,7 +128,6 @@ def calcDensity2(w,rho,phiA,phiB):
 
 #def calc_isothermal_compressible(w,chi,rho0,phiA,phiB):
 
-
 class model():
     def __init__(self,chi,rho0,ensemble = 'canonical'):
         self.chi = chi
@@ -125,30 +151,25 @@ class model():
     def dHdw_compressible(self,w):
         wplus = w[:,0]
         wminus = w[:,1]
-        wA = (wplus+wminus)/2
-        wB = (wplus-wminus)/2
-        rhoA = self.rho(wA,self.phiA)
-        rhoB = self.rho(wB,self.phiB)
+        rhoA,rhoB = getw_rho(wplus,wminus,self.phiA,self.phiB,self.rho)
         dHdwplus = (rhoA+rhoB)-2/self.chi*wplus
         dHdwminus = (rhoB-rhoA)+2/self.chi*wminus
         return self.rho0*np.vstack((dHdwplus,-dHdwminus)).T
     def dHdw_weakcompressible(self,w):
         wplus = w[:,0]
         wminus = w[:,1]
-        wA = (wplus+wminus)/2
-        wB = (wplus-wminus)/2
-        rhoA = self.rho(wA,self.phiA)
-        rhoB = self.rho(wB,self.phiB)
-        dHdwplus = (rhoA+rhoB)-2/(self.chi+2*self.zeta)*(wplus-self.zeta)
+        wplus = w[:,0]
+        wminus = w[:,1]
+        rhoA,rhoB = getw_rho(wplus,wminus,self.phiA,self.phiB,self.rho)
+        dHdwplus = (rhoA+rhoB)-2/(self.chi+2*self.zeta)*(wplus+self.zeta)
         dHdwminus = (rhoB-rhoA)+2/self.chi*wminus
         return self.rho0*np.vstack((dHdwplus,-dHdwminus)).T
     def dHdw_incompressible(self,w):
         wplus = w[:,0]
         wminus = w[:,1]
-        wA = (wplus+wminus)/2
-        wB = (wplus-wminus)/2
-        rhoA = self.rho(wA,self.phiA)
-        rhoB = self.rho(wB,self.phiB)
+        wplus = w[:,0]
+        wminus = w[:,1]
+        rhoA,rhoB = getw_rho(wplus,wminus,self.phiA,self.phiB,self.rho)
         dHdwplus = (rhoA+rhoB)-1
         dHdwminus = (rhoB-rhoA)+2/self.chi*wminus
         return self.rho0*np.vstack((dHdwplus,-dHdwminus)).T
@@ -159,28 +180,43 @@ class model():
             w = w.reshape((1,2))
         wplus = w[:,0]
         wminus = w[:,1]
-        wA = (wplus+wminus)/2
-        wB = (wplus-wminus)/2
-        rhoA = self.rho(wA,self.phiA)
-        rhoB = self.rho(wB,self.phiB)
+        rhoA,rhoB = getw_rho(wplus,wminus,self.phiA,self.phiB,self.rho)
         g = self.rho0*(rhoA+rhoB-1)
-        return (np.vstack((g,g)).T)
+        return g
     def dgdw(self,w):
         wplus = w[:,0]
         wminus = w[:,1]
-        wA = (wplus+wminus)/2
-        wB = (wplus-wminus)/2
+        rhoA,rhoB = getw_rho(wplus,wminus,self.phiA,self.phiB,self.rho)
         if self.ensemble == 'grand':
-            rhoA = self.rho(wA,self.phiA)
-            rhoB = self.rho(wB,self.phiB)
             dgdwplus = -(rhoA+rhoB)
-            dgdwminus = (rhoA-rhoB)
-            #there might be a sign here?
-            return np.vstack((dgdwplus,dgdwminus)).T
+            dgdwminus = -(rhoB-rhoA)
+            return self.rho0*np.vstack((-dgdwplus,dgdwminus)).T
     def getDensity(self,w):
         return self.rho0*calc_density(w,self.rho,self.phiA,self.phiB)
     def getCorrelation(self,w):
         return self.rho0*calcDensity2(w,self.rho,self.phiA,self.phiB)
     def getCorrelation_list(self,wlist):
         return np.array([self.rho0*calcDensity2(w,self.rho,self.phiA,self.phiB) for w in wlist],dtype = complex)    
-    
+
+    def dgldl(self,w,l):
+        wplus = w[:,0]
+        wminus = w[:,1]
+        rhoA,rhoB = getw_rho(wplus,wminus,self.phiA,self.phiB,self.rho)
+        rho_plus = rhoA+rhoB
+        rho_minus = rhoB-rhoA
+        wnew = w.copy()
+        wnew[:,0] += l*self.dgdw(w)[:,0]
+        wnew[:,1] += l*self.dgdw(w)[:,1]
+
+        if self.ensemble == 'grand':
+            wplus_c = wnew[:,0]
+            wminus_c = wnew[:,1]
+            rhoA_adjust,rhoB_adjust = getw_rho(wplus_c,wminus_c,self.phiA,self.phiB,self.rho)
+            dgdl = rhoA_adjust*(rho_plus-rho_minus)+rhoB_adjust*(rho_plus+rho_minus)
+            dgdl *= self.rho0*0.25
+            return dgdl
+    def gl(self,w,l):
+        wnew = w.copy()
+        wnew[:,0] += l*self.dgdw(w)[:,0]
+        wnew[:,1] += l*self.dgdw(w)[:,1]
+        return self.rho0*self.g(wnew)
