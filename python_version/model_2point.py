@@ -37,8 +37,18 @@ def getw_rho(wplus,wminus,phiA,phiB,rho):
     rhoB = rho(wB,phiB)
     return rhoA,rhoB
 def remove_k0(field):
-    mean = np.mean(field)
-    return field-mean
+    
+    # if field is complex
+    if np.iscomplexobj(field):
+
+        mean_real = np.mean(field.real)
+        mean_imag = np.mean(field.imag)
+        field.real = field.real-mean_real
+        field.imag = field.imag-mean_imag
+    else:
+        mean = np.mean(field)
+        field = field-mean
+    return field
 
 
 
@@ -59,12 +69,19 @@ class sde_int():
         x = []
         tlist = []
         shape_array = np.shape(self.x0)
+        if self.ensemble == 'canonical':
+            self.x0[:,0] = remove_k0(self.x0[:,0])
+
         x.append(self.x0)
         tlist.append(0)
         t = 0
         while t < tmax:
             dt_eff = delta_t*lambda_t
-            xtemp = x[-1] + self.F(x[-1])*dt_eff 
+            Force = self.F(x[-1])
+            if self.ensemble == 'canonical':
+                Force = remove_k0(Force)
+
+            xtemp = x[-1] + Force*dt_eff 
             if not SCFT:
                 wplus_noise = np.random.normal(0,1,shape_array[0])
                 if self.ensemble=='canonical':
@@ -147,6 +164,14 @@ def calcDensity2(w,rho,phiA,phiB):
     correlation_array[0,1] = np.mean(d_rhoA*d_rhoB)-np.mean(d_rhoA)*np.mean(d_rhoB)
     correlation_array[1,0] = correlation_array[0,1]
     return correlation_array
+def calcTotalDensity2(w,rho,phiA,phiB):
+    rho = calc_density(w,rho,phiA,phiB)
+    rhoA = rho[:,0]
+    rhoB = rho[:,1]
+    rho_total = rhoA+rhoB
+    drho = rho_total-1
+    return np.mean(drho*drho)-np.mean(drho)**2
+
 
 #def calcDensity2(w,rho,phiA,phiB):
 #    rho = calc_density(w,rho,phiA,phiB)
@@ -227,8 +252,10 @@ class model():
         return calcDensity2(w,self.rho,self.phiA,self.phiB)
     def getCorrelation_list(self,wlist):
         return np.array([calcDensity2(w,self.rho,self.phiA,self.phiB) for w in wlist],dtype = complex)    
-    
-
+    def getCorrelationTotal(self,w):
+        return calcTotalDensity2(w,self.rho,self.phiA,self.phiB)
+    def getCorrelationTotal_list(self,wlist):
+        return np.array([calcTotalDensity2(w,self.rho,self.phiA,self.phiB) for w in wlist],dtype = complex)
     def dgldl(self,w,l):
         wplus = w[:,0]
         wminus = w[:,1]
