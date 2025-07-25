@@ -1,6 +1,5 @@
 import numpy as np
-
-def LSolver(w0,lag_mult,gl,dgldl,tol = 1e-5,maxiter = 10000,maxupdate = 1000):
+def LSolver(w0,lag_mult,gl,dgldl,tol = 1e-5,maxiter = 10000,maxupdate = 1000,verbose = False):
     error = 1
     itter=0
 
@@ -10,8 +9,10 @@ def LSolver(w0,lag_mult,gl,dgldl,tol = 1e-5,maxiter = 10000,maxupdate = 1000):
         # actually we can apply this logic locally to each element of the update
         loc  = np.where(np.abs(update)>maxupdate)
         if len(loc)>0:
-            update[loc] = update[loc]/np.abs(update[loc])*maxupdate
-        
+           update[loc] = update[loc]/np.abs(update[loc])*maxupdate
+            # update[loc] = (gl(w0,lag_mult))
+        if verbose:
+            print(np.max(np.abs(update)))
         lag_mult+= -(update)
         #use Linf nnorm
         error = np.max(np.abs(gl(w0,lag_mult).real))
@@ -21,8 +22,10 @@ def LSolver(w0,lag_mult,gl,dgldl,tol = 1e-5,maxiter = 10000,maxupdate = 1000):
         itter+=1
         if itter == maxiter:
             break
-        print('error',error)
+    if verbose:
+        return lag_mult,error,itter
     return lag_mult
+
 
 
 def getw_rho(wplus,wminus,phiA,phiB,rho):
@@ -33,14 +36,28 @@ def getw_rho(wplus,wminus,phiA,phiB,rho):
     rhoA = rho(wA,phiA)
     rhoB = rho(wB,phiB)
     return rhoA,rhoB
+def remove_k0(field):
+    
+    # if field is complex
+    if np.iscomplexobj(field):
+
+        mean_real = np.mean(field.real)
+        mean_imag = np.mean(field.imag)
+        field.real = field.real-mean_real
+        field.imag = field.imag-mean_imag
+    else:
+        mean = np.mean(field)
+        field = field-mean
+    return field
 
 
 
 class sde_int():
-    def __init__(self,x0,F,g):
+    def __init__(self,x0,F,g,ensemble = 'canonical'):
         self.x0 = x0
         self.F = F
         self.g = g
+        self.ensemble = ensemble
     def initialize_project(self,dgdw,gl,dgldl,tol,maxiter,maxupdate):
         self.dgdw = dgdw
         self.gl = gl
@@ -52,14 +69,25 @@ class sde_int():
         x = []
         tlist = []
         shape_array = np.shape(self.x0)
+        if self.ensemble == 'canonical':
+            self.x0[:,0] = remove_k0(self.x0[:,0])
+
         x.append(self.x0)
         tlist.append(0)
         t = 0
         while t < tmax:
             dt_eff = delta_t*lambda_t
-            xtemp = x[-1] + self.F(x[-1])*dt_eff 
+            Force = self.F(x[-1])
+            if self.ensemble == 'canonical':
+                Force = remove_k0(Force)
+
+            xtemp = x[-1] + Force*dt_eff 
             if not SCFT:
-                noise = np.vstack((np.random.normal(0,1,shape_array[0]),np.random.normal(0,1,shape_array[0]))).T
+                wplus_noise = np.random.normal(0,1,shape_array[0])
+                if self.ensemble=='canonical':
+                    wplus_noise = remove_k0(wplus_noise)
+                noise = np.vstack((wplus_noise,np.random.normal(0,1,shape_array[0]))).T
+
                 xtemp += self.g(x[-1])*np.sqrt(2*dt_eff)*noise
             if np.any(np.isnan(xtemp)):
                 print('nan')
@@ -79,7 +107,11 @@ class sde_int():
             dt_eff = delta_t*lambda_t
             xtemp_i = x[-1] + self.F(x[-1])*dt_eff 
             if not SCFT:
-                noise = np.vstack((np.random.normal(0,1,shape_array[0]),np.random.normal(0,1,shape_array[0]))).T
+                wplus_noise = np.random.normal(0,1,shape_array[0])
+                if self.ensemble=='canonical':
+                    wplus_noise = remove_k0(wplus_noise)
+
+                noise = np.vstack((wplus_noise,np.random.normal(0,1,shape_array[0]))).T
                 xtemp_i += self.g(x[-1])*np.sqrt(2*dt_eff)*noise
             xtemp = xtemp_i.copy()
             lag_mult = np.zeros(len(xtemp),dtype = complex)
@@ -115,16 +147,43 @@ def calc_density(w,rho,phiA,phiB):
     rhoB = rho(wB,phiB)
     return np.vstack((rhoA,rhoB)).T
 
+def calcmean(w,rho,phiA,phiB):
+    rho = calc_density(w,rho,phiA,phiB)
+    return np.mean(rho,axis = 0)
+
 def calcDensity2(w,rho,phiA,phiB):
     rho = calc_density(w,rho,phiA,phiB)
-    rhoA = rho[:,0]-phiA
-    rhoB = rho[:,1]-phiB
+    rhoA = rho[:,0]
+    rhoB = rho[:,1]
+
+    d_rhoA = rhoA-phiA
+    d_rhoB = rhoB-phiB
     correlation_array = np.zeros((2,2), dtype=complex)
-    correlation_array[0,0] = np.mean(rhoA*rhoA)-np.mean(rhoA)**2
-    correlation_array[1,1] = np.mean(rhoB*rhoB)-np.mean(rhoB)**2
-    correlation_array[0,1] = np.mean(rhoA*rhoB)-np.mean(rhoA)*np.mean(rhoB)
+    correlation_array[0,0] = np.mean(d_rhoA*d_rhoA)-np.mean(d_rhoA)**2
+    correlation_array[1,1] = np.mean(d_rhoB*d_rhoB)-np.mean(d_rhoB)**2
+    correlation_array[0,1] = np.mean(d_rhoA*d_rhoB)-np.mean(d_rhoA)*np.mean(d_rhoB)
     correlation_array[1,0] = correlation_array[0,1]
     return correlation_array
+def calcTotalDensity2(w,rho,phiA,phiB):
+    rho = calc_density(w,rho,phiA,phiB)
+    rhoA = rho[:,0]
+    rhoB = rho[:,1]
+    rho_total = rhoA+rhoB
+    drho = rho_total-1
+    return np.mean(drho*drho)-np.mean(drho)**2
+
+
+#def calcDensity2(w,rho,phiA,phiB):
+#    rho = calc_density(w,rho,phiA,phiB)
+#    rhoA = rho[:,0]-phiA
+#    rhoB = rho[:,1]-phiB
+#    correlation_array = np.zeros((2,2), dtype=complex)
+#    correlation_array[0,0] = np.mean(rhoA*rhoA)-np.square(phiA)
+#    correlation_array[1,1] = np.mean(rhoB*rhoB)-np.square(phiB)
+#    correlation_array[0,1] = np.mean(rhoA*rhoB)-(phiA*phiB)
+#    correlation_array[1,0] = correlation_array[0,1]
+#    return correlation_array
+
 
 #def calc_isothermal_compressible(w,chi,rho0,phiA,phiB):
 
@@ -158,15 +217,11 @@ class model():
     def dHdw_weakcompressible(self,w):
         wplus = w[:,0]
         wminus = w[:,1]
-        wplus = w[:,0]
-        wminus = w[:,1]
         rhoA,rhoB = getw_rho(wplus,wminus,self.phiA,self.phiB,self.rho)
         dHdwplus = (rhoA+rhoB)-2/(self.chi+2*self.zeta)*(wplus+self.zeta)
         dHdwminus = (rhoB-rhoA)+2/self.chi*wminus
         return self.rho0*np.vstack((dHdwplus,-dHdwminus)).T
     def dHdw_incompressible(self,w):
-        wplus = w[:,0]
-        wminus = w[:,1]
         wplus = w[:,0]
         wminus = w[:,1]
         rhoA,rhoB = getw_rho(wplus,wminus,self.phiA,self.phiB,self.rho)
@@ -190,14 +245,17 @@ class model():
         if self.ensemble == 'grand':
             dgdwplus = -(rhoA+rhoB)
             dgdwminus = -(rhoB-rhoA)
-            return self.rho0*np.vstack((-dgdwplus,dgdwminus)).T
+            return self.rho0*np.vstack((dgdwplus,dgdwminus)).T
     def getDensity(self,w):
         return self.rho0*calc_density(w,self.rho,self.phiA,self.phiB)
     def getCorrelation(self,w):
-        return self.rho0*calcDensity2(w,self.rho,self.phiA,self.phiB)
+        return calcDensity2(w,self.rho,self.phiA,self.phiB)
     def getCorrelation_list(self,wlist):
-        return np.array([self.rho0*calcDensity2(w,self.rho,self.phiA,self.phiB) for w in wlist],dtype = complex)    
-
+        return np.array([calcDensity2(w,self.rho,self.phiA,self.phiB) for w in wlist],dtype = complex)    
+    def getCorrelationTotal(self,w):
+        return calcTotalDensity2(w,self.rho,self.phiA,self.phiB)
+    def getCorrelationTotal_list(self,wlist):
+        return np.array([calcTotalDensity2(w,self.rho,self.phiA,self.phiB) for w in wlist],dtype = complex)
     def dgldl(self,w,l):
         wplus = w[:,0]
         wminus = w[:,1]
